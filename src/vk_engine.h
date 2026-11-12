@@ -5,16 +5,34 @@
 
 #include <vk_types.h>
 
+constexpr unsigned int FRAME_OVERLAP = 2;
+
+struct FrameData {
+
+	VkCommandPool _commandPool = VK_NULL_HANDLE;
+	VkCommandBuffer _mainCommandBuffer = VK_NULL_HANDLE;
+
+	VkSemaphore _swapchainSemaphore = VK_NULL_HANDLE, _renderSemaphore = VK_NULL_HANDLE;
+	VkFence _renderFence = VK_NULL_HANDLE;
+};
+
 class VulkanEngine {
 public:
 
+	struct SDL_Window* _window{ nullptr };
 	bool _isInitialized{ false };
 	int _frameNumber {0};
 	bool stop_rendering{ false };
 	VkExtent2D _windowExtent{ 1700 , 900 };
 
+	FrameData _frames[FRAME_OVERLAP];
+	FrameData& get_current_frame() { return _frames[_frameNumber % FRAME_OVERLAP]; };
 
-	struct SDL_Window* _window{ nullptr };
+	//绘制队列族
+	uint32_t _graphicsQueueFamily;
+	//绘制队列句柄
+	VkQueue _graphicsQueue = VK_NULL_HANDLE;
+
 
 	static VulkanEngine& Get();
 
@@ -29,6 +47,7 @@ public:
 
 	//run main loop
 	void run();
+
 
 private:
 	VkInstance _instance = VK_NULL_HANDLE;// Vulkan library handle

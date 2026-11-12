@@ -12,15 +12,24 @@ void vkutil::transition_image(VkCommandBuffer cmd, VkImage image, VkImageLayout 
     VkImageMemoryBarrier2 imageBarrier {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
     imageBarrier.pNext = nullptr;
 
-    imageBarrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    //图像布局转换：可能图像正在被使用，转换之前需要等待上一个阶段使用完毕，图像还可能被下一个阶段使用，所以下一个阶段必须等待图像布局转换完成，才能使用，所以需要设置被等待者和等待者
+    /**
+    * 命令 A：拷贝数据到图片（在 TRANSFER 阶段执行）。（当前使用者）
+    * 屏障 B：把图片从 TRANSFER_DST 转换到 SHADER_READ_ONLY。
+    * 命令 C：画一个三角形，在片段着色器（FRAGMENT_SHADER 阶段）里读取这张图片。（下一个使用者）
+    */
+
+    imageBarrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;//等待所有的使用者都使用完成才开始转换布局（不管什么具体阶段）
+    imageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;//下一个使用者等待布局转换完成才能使用（不管什么具体阶段）
     imageBarrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
-    imageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     imageBarrier.dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT;
 
     imageBarrier.oldLayout = currentLayout;
     imageBarrier.newLayout = newLayout;
 
+    //转换图像的特定部分-颜色？深度？
     VkImageAspectFlags aspectMask = (newLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+    //指定受影响的图像及其具体部分，目前的图像不是数组，也没有 mipmapping 层级，因此只指定了一个层级和图层
     imageBarrier.subresourceRange = vkinit::image_subresource_range(aspectMask);
     imageBarrier.image = image;
 
