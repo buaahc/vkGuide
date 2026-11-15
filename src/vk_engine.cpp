@@ -1,5 +1,6 @@
 ﻿//> includes
-#include "vk_engine.h"
+#include <chrono>
+#include <thread>
 
 #include <SDL.h>
 #include <SDL_vulkan.h>
@@ -8,9 +9,11 @@
 #include <vk_types.h>
 #include "VkBootstrap.h"
 #include "vk_images.h"
+#include "vk_engine.h"
 
-#include <chrono>
-#include <thread>
+#define VMA_IMPLEMENTATION
+#include "vk_mem_alloc.h"
+
 //< includes
 
 //> init
@@ -18,6 +21,7 @@ constexpr bool bUseValidationLayers = false;
 
 VulkanEngine* loadedEngine = nullptr;
 VulkanEngine& VulkanEngine::Get() { return *loadedEngine; }
+
 void VulkanEngine::init()
 {
     // only one engine initialization is allowed with the application.
@@ -64,7 +68,13 @@ void VulkanEngine::cleanup()
             vkDestroyFence(this->_logicDevice, this->_frames[i]._renderFence, nullptr);
             vkDestroySemaphore(this->_logicDevice, this->_frames[i]._renderSemaphore, nullptr);
             vkDestroySemaphore(this->_logicDevice, this->_frames[i]._swapchainSemaphore, nullptr);
+
+            //清空帧对象
+            this->_frames[i]._deletionQueue.flush();
         }
+
+        //清空引擎对象
+        this->_mainDeletionQueue.flush();
 
         destroy_swapchain();
 
@@ -84,9 +94,10 @@ void VulkanEngine::cleanup()
 
 void VulkanEngine::draw()
 {
-    // wait until the gpu has finished rendering the last frame. Timeout of 1
-        // second
+    // wait until the gpu has finished rendering the last frame. Timeout of 1 second
     VK_CHECK(vkWaitForFences(this->_logicDevice, 1, &get_current_frame()._renderFence, true, 1000000000));
+    //清空帧对象
+    get_current_frame()._deletionQueue.flush();
     VK_CHECK(vkResetFences(this->_logicDevice, 1, &get_current_frame()._renderFence));
     uint32_t swapchainImageIndex;
     //----------------------------------阻塞------------------------------------------------
@@ -94,16 +105,24 @@ void VulkanEngine::draw()
     VK_CHECK(vkAcquireNextImageKHR(this->_logicDevice, _swapchain, 1000000000, get_current_frame()._swapchainSemaphore, nullptr, &swapchainImageIndex));
 
 
+    this->_drawExtent.width = _drawImage.imageExtent.width;
+    this->_drawExtent.height = _drawImage.imageExtent.height;
+
     VkCommandBuffer cmd = get_current_frame()._mainCommandBuffer;
     VK_CHECK(vkResetCommandBuffer(cmd, 0));
     //添加一个标志VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT。这是可选的，但如果我们能够告知驱动程序此缓冲区只会提交和执行一次，我们的命令编码速度可能会略有提升
     VkCommandBufferBeginInfo cmdBeginInfo = vkinit::command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
     VK_CHECK(vkBeginCommandBuffer(cmd, &cmdBeginInfo));
 
+    //make the drawImage.image into writeable mode before rendering
+    //处于 VK_IMAGE_LAYOUT_GENERAL 布局的图像可以在不转换布局的情况下切换不同用途
+    vkutil::transition_image(cmd, this->_drawImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
 
+
+#if 0 //clear swapchainImage
     //make the swapchain image into writeable mode before rendering
+    //处于 VK_IMAGE_LAYOUT_GENERAL 布局的图像可以在不转换布局的情况下切换不同用途
     vkutil::transition_image(cmd, _swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
-
     //make a clear-color from frame number. This will flash with a 120 frame period.
     VkClearColorValue clearValue;
     float flash = std::abs(std::sin(_frameNumber / 120.f));
@@ -113,9 +132,23 @@ void VulkanEngine::draw()
 
     //clear image
     vkCmdClearColorImage(cmd, _swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_GENERAL, &clearValue, 1, &clearRange);
-
     //make the swapchain image into presentable mode
     vkutil::transition_image(cmd, _swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+#endif // 0
+
+    //clear image
+    this->draw_background(cmd);
+
+    //transition the draw image and the swapchain image into their correct transfer layouts
+    vkutil::transition_image(cmd, this->_drawImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    vkutil::transition_image(cmd, this->_swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+    // execute a copy from the draw image into the swapchain
+    vkutil::copy_image_to_image(cmd, this->_drawImage.image, this->_swapchainImages[swapchainImageIndex], this->_drawExtent, this->_swapchainExtent);
+
+    // set swapchain image layout to Present so we can show it on the screen
+    vkutil::transition_image(cmd, this->_swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+
 
     //finalize the command buffer (we can no longer add commands, but it can now be executed)
     VK_CHECK(vkEndCommandBuffer(cmd));
@@ -250,11 +283,25 @@ void VulkanEngine::init_vulkan()
     //use vkbootstrap to get a Graphics queue
     this->_graphicsQueue = vkbDevice.get_queue(vkb::QueueType::graphics).value();
     this->_graphicsQueueFamily = vkbDevice.get_queue_index(vkb::QueueType::graphics).value();
+
+
+    // initialize the memory allocator
+    VmaAllocatorCreateInfo allocatorInfo = {};
+    allocatorInfo.physicalDevice = this->_physicalDevice;
+    allocatorInfo.device = this->_logicDevice;
+    allocatorInfo.instance = this->_instance;
+    allocatorInfo.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+    vmaCreateAllocator(&allocatorInfo, &this->_allocator);
+
+    _mainDeletionQueue.push_function([&]() {
+        vmaDestroyAllocator(this->_allocator);
+        });
 }
 
 void VulkanEngine::init_swapchain()
 {
-    this->create_swapchain(_windowExtent.width, _windowExtent.height);
+    this->create_swapchain(this->_windowExtent.width, this->_windowExtent.height);
+    this->create_drawImage();
 }
 
 void VulkanEngine::init_commands()
@@ -334,4 +381,61 @@ void VulkanEngine::destroy_swapchain()
 
         vkDestroyImageView(this->_logicDevice, this->_swapchainImageViews[i], nullptr);
     }
+}
+
+void VulkanEngine::create_drawImage()
+{
+    //draw image size will match the window
+    VkExtent3D drawImageExtent = {
+       this->_windowExtent.width,
+       this->_windowExtent.height,
+        1
+    };
+
+    //hardcoding the draw format to 32 bit float
+    this->_drawImage.imageFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+    this->_drawImage.imageExtent = drawImageExtent;
+
+    VkImageUsageFlags drawImageUsages{};
+    drawImageUsages |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    drawImageUsages |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    drawImageUsages |= VK_IMAGE_USAGE_STORAGE_BIT;
+    drawImageUsages |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+
+    VkImageCreateInfo rimg_info = vkinit::image_create_info(_drawImage.imageFormat, drawImageUsages, drawImageExtent);
+
+    //for the draw image, we want to allocate it from gpu local memory
+    VmaAllocationCreateInfo rimg_allocinfo = {};
+    rimg_allocinfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+    rimg_allocinfo.requiredFlags = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    //allocate and create the image
+    vmaCreateImage(this->_allocator, &rimg_info, &rimg_allocinfo, &this->_drawImage.image, &this->_drawImage.allocation, nullptr);
+
+    //build a image-view for the draw image to use for rendering
+    VkImageViewCreateInfo rview_info = vkinit::imageview_create_info(
+        this->_drawImage.imageFormat,
+        this->_drawImage.image,
+        VK_IMAGE_ASPECT_COLOR_BIT);
+
+    VK_CHECK(vkCreateImageView(this->_logicDevice, &rview_info, nullptr, &this->_drawImage.imageView));
+
+    //add to deletion queues
+    this->_mainDeletionQueue.push_function([=]() {
+        vkDestroyImageView(this->_logicDevice, this->_drawImage.imageView, nullptr);
+        vmaDestroyImage(this->_allocator, this->_drawImage.image, this->_drawImage.allocation);
+        });
+}
+
+void VulkanEngine::draw_background(VkCommandBuffer cmd)
+{
+    //make a clear-color from frame number. This will flash with a 120 frame period.
+    VkClearColorValue clearValue;
+    float flash = std::abs(std::sin(this->_frameNumber / 120.f));
+    clearValue = { { 0.0f, 0.0f, flash, 1.0f } };
+
+    VkImageSubresourceRange clearRange = vkinit::image_subresource_range(VK_IMAGE_ASPECT_COLOR_BIT);
+
+    //clear image
+    vkCmdClearColorImage(cmd, this->_drawImage.image, VK_IMAGE_LAYOUT_GENERAL, &clearValue, 1, &clearRange);
 }

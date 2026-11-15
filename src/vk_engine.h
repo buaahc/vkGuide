@@ -7,6 +7,25 @@
 
 constexpr unsigned int FRAME_OVERLAP = 2;
 
+//删除队列
+struct DeletionQueue
+{
+	std::deque<std::function<void()>> deletors;
+
+	void push_function(std::function<void()>&& function) {
+		deletors.push_back(function);
+	}
+
+	void flush() {
+		// reverse iterate the deletion queue to execute all the functions
+		for (auto it = deletors.rbegin(); it != deletors.rend(); it++) {
+			(*it)(); //call functors
+		}
+
+		deletors.clear();
+	}
+};
+
 struct FrameData {
 
 	VkCommandPool _commandPool = VK_NULL_HANDLE;
@@ -14,6 +33,9 @@ struct FrameData {
 
 	VkSemaphore _swapchainSemaphore = VK_NULL_HANDLE, _renderSemaphore = VK_NULL_HANDLE;
 	VkFence _renderFence = VK_NULL_HANDLE;
+
+	//每一帧需要删除的对象
+	DeletionQueue _deletionQueue;
 };
 
 class VulkanEngine {
@@ -33,7 +55,16 @@ public:
 	//绘制队列句柄
 	VkQueue _graphicsQueue = VK_NULL_HANDLE;
 
+	//引擎销毁时需要删除的对象
+	DeletionQueue _mainDeletionQueue;
 
+	//vulkan对象内存分配器
+	VmaAllocator _allocator;
+
+	//draw resources
+	AllocatedImage _drawImage;
+	VkExtent2D _drawExtent;
+public:
 	static VulkanEngine& Get();
 
 	//initializes everything in the engine
@@ -71,6 +102,9 @@ private:
 
 	void create_swapchain(uint32_t width, uint32_t height);
 	void destroy_swapchain();
+	void create_drawImage();
+	//glClear
+	void draw_background(VkCommandBuffer cmd);
 };
 //< intro
 
