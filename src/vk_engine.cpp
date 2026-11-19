@@ -1,6 +1,10 @@
 ﻿//> includes
 #include <chrono>
 #include <thread>
+#include <iostream>
+#include <string>
+#include <windows.h>
+#include <filesystem>
 
 #include <SDL.h>
 #include <SDL_vulkan.h>
@@ -10,14 +14,28 @@
 #include "VkBootstrap.h"
 #include "vk_images.h"
 #include "vk_engine.h"
+#include "vk_pipelines.h"
 
 #define VMA_IMPLEMENTATION
 #include "vk_mem_alloc.h"
+
 
 //< includes
 
 //> init
 constexpr bool bUseValidationLayers = false;
+
+std::string getExeDirectory() {
+    char buffer[MAX_PATH];
+    // 获取 exe 的完整绝对路径，例如: C:\MyProject\build\Debug\App.exe
+    GetModuleFileNameA(NULL, buffer, MAX_PATH);
+
+    // 使用 std::filesystem 提取所在目录
+    std::filesystem::path exePath(buffer);
+
+    // parent_path() 会去掉 App.exe，只保留 C:\MyProject\build\Debug
+    return exePath.parent_path().string();
+}
 
 VulkanEngine* loadedEngine = nullptr;
 VulkanEngine& VulkanEngine::Get() { return *loadedEngine; }
@@ -47,6 +65,8 @@ void VulkanEngine::init()
     this->init_swapchain();
     this->init_commands();
     this->init_sync_structures();
+    this->init_descriptors();
+    this->init_pipelines();
 
     _isInitialized = true;
 }
@@ -137,7 +157,19 @@ void VulkanEngine::draw()
 #endif // 0
 
     //clear image
-    this->draw_background(cmd);
+    //this->draw_background(cmd);
+
+
+    // bind the gradient drawing compute pipeline
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, this->_gradientPipeline);
+
+    // bind the descriptor set containing the draw image for the compute pipeline
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, this->_gradientPipelineLayout, 0, 1, &this->_drawImageDescriptorSet, 0, nullptr);
+
+    // execute the compute pipeline dispatch. We are using 16x16 workgroup size so we need to divide by it
+    vkCmdDispatch(cmd, std::ceil(this->_drawExtent.width / 16.0), std::ceil(this->_drawExtent.height / 16.0), 1);
+
+
 
     //transition the draw image and the swapchain image into their correct transfer layouts
     vkutil::transition_image(cmd, this->_drawImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
@@ -319,7 +351,7 @@ void VulkanEngine::init_commands()
 
     for (int i = 0; i < FRAME_OVERLAP; i++) {
 
-        VK_CHECK(vkCreateCommandPool(this->_logicDevice, &commandPoolInfo, nullptr, &_frames[i]._commandPool));
+        VK_CHECK(vkCreateCommandPool(this->_logicDevice, &commandPoolInfo, nullptr, &this->_frames[i]._commandPool));
         // allocate the default command buffer that we will use for rendering
        /* VkCommandBufferAllocateInfo cmdAllocInfo = {};
         cmdAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -327,10 +359,11 @@ void VulkanEngine::init_commands()
         cmdAllocInfo.commandPool = _frames[i]._commandPool;
         cmdAllocInfo.commandBufferCount = 1;
         cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;*/
-        VkCommandBufferAllocateInfo cmdAllocInfo = vkinit::command_buffer_allocate_info(_frames[i]._commandPool);
-        VK_CHECK(vkAllocateCommandBuffers(this->_logicDevice, &cmdAllocInfo, &_frames[i]._mainCommandBuffer));
+        VkCommandBufferAllocateInfo cmdAllocInfo = vkinit::command_buffer_allocate_info(this->_frames[i]._commandPool);
+        VK_CHECK(vkAllocateCommandBuffers(this->_logicDevice, &cmdAllocInfo, &this->_frames[i]._mainCommandBuffer));
     }
 }
+
 void VulkanEngine::init_sync_structures()
 {
     //create syncronization structures
@@ -341,11 +374,56 @@ void VulkanEngine::init_sync_structures()
     VkSemaphoreCreateInfo semaphoreCreateInfo = vkinit::semaphore_create_info();
 
     for (int i = 0; i < FRAME_OVERLAP; i++) {
-        VK_CHECK(vkCreateFence(this->_logicDevice, &fenceCreateInfo, nullptr, &_frames[i]._renderFence));
+        VK_CHECK(vkCreateFence(this->_logicDevice, &fenceCreateInfo, nullptr, &this->_frames[i]._renderFence));
 
-        VK_CHECK(vkCreateSemaphore(this->_logicDevice, &semaphoreCreateInfo, nullptr, &_frames[i]._swapchainSemaphore));
-        VK_CHECK(vkCreateSemaphore(this->_logicDevice, &semaphoreCreateInfo, nullptr, &_frames[i]._renderSemaphore));
+        VK_CHECK(vkCreateSemaphore(this->_logicDevice, &semaphoreCreateInfo, nullptr, &this->_frames[i]._swapchainSemaphore));
+        VK_CHECK(vkCreateSemaphore(this->_logicDevice, &semaphoreCreateInfo, nullptr, &this->_frames[i]._renderSemaphore));
     }
+}
+
+void VulkanEngine::init_descriptors()
+{
+    //create a descriptor pool that will hold 10 sets with 1 image each
+    std::vector<DescriptorAllocator::PoolSizeRatio> sizes =
+    {
+        { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1 }
+    };
+
+    this->_globalDescriptorAllocator.init_pool(this->_logicDevice, 10, sizes);
+
+    //make the descriptor set layout for our compute draw
+    uint32_t bindingNo = 0;
+    {
+        DescriptorLayoutBuilder builder;
+        builder.add_binding(bindingNo, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+        //VK_SHADER_STAGE_COMPUTE_BIT阶段使用
+        this->_drawImageDescriptorLayout = builder.build(this->_logicDevice, VK_SHADER_STAGE_COMPUTE_BIT);
+    }
+
+    //allocate a descriptor set for our draw image
+    this->_drawImageDescriptorSet = this->_globalDescriptorAllocator.allocate(this->_logicDevice, this->_drawImageDescriptorLayout);
+
+    VkDescriptorImageInfo imgInfo{};
+    imgInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    imgInfo.imageView = this->_drawImage.imageView;
+
+    VkWriteDescriptorSet drawImageWrite = {};
+    drawImageWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    drawImageWrite.pNext = nullptr;
+    drawImageWrite.dstBinding = bindingNo;
+    drawImageWrite.dstSet = this->_drawImageDescriptorSet;
+    drawImageWrite.descriptorCount = 1;
+    drawImageWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    drawImageWrite.pImageInfo = &imgInfo;
+
+    vkUpdateDescriptorSets(this->_logicDevice, 1, &drawImageWrite, 0, nullptr);
+
+    //make sure both the descriptor allocator and the new layout get cleaned up properly
+    this->_mainDeletionQueue.push_function([&]() {
+        //描述符集_drawImageDescriptorSet是从描述符池VkDescriptorPool中Allocator，会跟随描述符池一起销毁；
+        this->_globalDescriptorAllocator.destroy_pool(this->_logicDevice);
+        vkDestroyDescriptorSetLayout(this->_logicDevice, this->_drawImageDescriptorLayout, nullptr);
+        });
 }
 
 void VulkanEngine::create_swapchain(uint32_t width, uint32_t height)
@@ -438,4 +516,46 @@ void VulkanEngine::draw_background(VkCommandBuffer cmd)
 
     //clear image
     vkCmdClearColorImage(cmd, this->_drawImage.image, VK_IMAGE_LAYOUT_GENERAL, &clearValue, 1, &clearRange);
+}
+
+void VulkanEngine::init_pipelines()
+{
+    this->init_background_pipelines();
+}
+
+void VulkanEngine::init_background_pipelines()
+{
+    VkPipelineLayoutCreateInfo computeLayout{};
+    computeLayout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    computeLayout.pNext = nullptr;
+    computeLayout.pSetLayouts = &this->_drawImageDescriptorLayout;
+    computeLayout.setLayoutCount = 1;
+
+    VK_CHECK(vkCreatePipelineLayout(this->_logicDevice, &computeLayout, nullptr, &this->_gradientPipelineLayout));
+
+
+    std::string exePath = getExeDirectory();
+    std::string shaderPath = exePath + "/shaders/gradient.comp.spv";
+    //layout code
+    VkShaderModule computeDrawShader;
+    if (!vkutil::load_shader_module(shaderPath.c_str(), this->_logicDevice, &computeDrawShader))
+    {
+        fmt::print("Error when building the compute shader \n");
+    }
+
+    VkPipelineShaderStageCreateInfo stageinfo{};
+    stageinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stageinfo.pNext = nullptr;
+    stageinfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    stageinfo.module = computeDrawShader;
+    stageinfo.pName = "main";
+
+    VkComputePipelineCreateInfo computePipelineCreateInfo{};
+    computePipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    computePipelineCreateInfo.pNext = nullptr;
+    computePipelineCreateInfo.layout = this->_gradientPipelineLayout;
+    computePipelineCreateInfo.stage = stageinfo;
+
+    VK_CHECK(vkCreateComputePipelines(this->_logicDevice, VK_NULL_HANDLE, 1, &computePipelineCreateInfo, nullptr, &this->_gradientPipeline));
+
 }

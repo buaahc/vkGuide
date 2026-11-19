@@ -4,9 +4,9 @@
 #pragma once
 
 #include <vk_types.h>
+#include "vk_descriptors.h"
 
 constexpr unsigned int FRAME_OVERLAP = 2;
-
 //删除队列
 struct DeletionQueue
 {
@@ -21,7 +21,6 @@ struct DeletionQueue
 		for (auto it = deletors.rbegin(); it != deletors.rend(); it++) {
 			(*it)(); //call functors
 		}
-
 		deletors.clear();
 	}
 };
@@ -79,7 +78,6 @@ public:
 	//run main loop
 	void run();
 
-
 private:
 	VkInstance _instance = VK_NULL_HANDLE;// Vulkan library handle
 	VkDebugUtilsMessengerEXT _debug_messenger = VK_NULL_HANDLE;// Vulkan debug output handle
@@ -94,17 +92,28 @@ private:
 	std::vector<VkImageView> _swapchainImageViews;
 	VkExtent2D _swapchainExtent;
 
+	//描述符集相关
+	DescriptorAllocator _globalDescriptorAllocator;
+	VkDescriptorSet _drawImageDescriptorSet;
+	VkDescriptorSetLayout _drawImageDescriptorLayout;
 private:
 	void init_vulkan();
 	void init_swapchain();
 	void init_commands();
 	void init_sync_structures();
+	void init_descriptors();
+
+	void init_pipelines();
+	void init_background_pipelines();
 
 	void create_swapchain(uint32_t width, uint32_t height);
 	void destroy_swapchain();
 	void create_drawImage();
 	//glClear
 	void draw_background(VkCommandBuffer cmd);
+public:
+	VkPipeline _gradientPipeline;
+	VkPipelineLayout _gradientPipelineLayout;
 };
 //< intro
 
