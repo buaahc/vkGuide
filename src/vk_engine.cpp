@@ -164,20 +164,35 @@ void VulkanEngine::draw()
 
 
     // bind the gradient drawing compute pipeline
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, this->_gradientPipeline);
+    //vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, this->_gradientPipeline);
 
-    // bind the descriptor set containing the draw image for the compute pipeline
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, this->_gradientPipelineLayout, 0, 1, &this->_drawImageDescriptorSet, 0, nullptr);
+    //// bind the descriptor set containing the draw image for the compute pipeline
+    //vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, this->_gradientPipelineLayout, 0, 1, &this->_drawImageDescriptorSet, 0, nullptr);
 
-    ComputePushConstants pc;
-    pc.data1 = glm::vec4(1, 0, 0, 1);
-    pc.data2 = glm::vec4(0, 0, 1, 1);
+    //ComputePushConstants pc;
+    //pc.data1 = glm::vec4(1, 0, 0, 1);
+    //pc.data2 = glm::vec4(0, 0, 1, 1);
 
-    vkCmdPushConstants(cmd, this->_gradientPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ComputePushConstants), &pc);
+    //vkCmdPushConstants(cmd, this->_gradientPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ComputePushConstants), &pc);
 
 
-    // execute the compute pipeline dispatch. We are using 16x16 workgroup size so we need to divide by it
-    vkCmdDispatch(cmd, std::ceil(this->_drawExtent.width / 16.0), std::ceil(this->_drawExtent.height / 16.0), 1);
+    //// execute the compute pipeline dispatch. We are using 16x16 workgroup size so we need to divide by it
+    //vkCmdDispatch(cmd, std::ceil(this->_drawExtent.width / 16.0), std::ceil(this->_drawExtent.height / 16.0), 1);
+
+
+    {
+        ComputeEffect& effect = this->_backgroundEffects[this->_currentBackgroundEffect];
+
+        // bind the background compute pipeline
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, effect._pipeline);
+
+        // bind the descriptor set containing the draw image for the compute pipeline
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, effect._layout, 0, 1, &this->_drawImageDescriptorSet, 0, nullptr);
+
+        vkCmdPushConstants(cmd, effect._layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ComputePushConstants), &effect._data);
+        // execute the compute pipeline dispatch. We are using 16x16 workgroup size so we need to divide by it
+        vkCmdDispatch(cmd, std::ceil(this->_drawExtent.width / 16.0), std::ceil(this->_drawExtent.height / 16.0), 1);
+    }
 
 
     //transition the draw image and the swapchain image into their correct transfer layouts
@@ -800,4 +815,20 @@ void VulkanEngine::drawUI()
 {
     //some imgui UI to test
     ImGui::ShowDemoWindow();
+
+
+    if (ImGui::Begin("background")) {
+
+        ComputeEffect& selected = this->_backgroundEffects[this->_currentBackgroundEffect];
+
+        ImGui::Text("Selected effect: ", selected._name);
+
+        ImGui::SliderInt("Effect Index", &this->_currentBackgroundEffect, 0, this->_backgroundEffects.size() - 1);
+
+        ImGui::InputFloat4("data1", (float*)&selected._data.data1);
+        ImGui::InputFloat4("data2", (float*)&selected._data.data2);
+        ImGui::InputFloat4("data3", (float*)&selected._data.data3);
+        ImGui::InputFloat4("data4", (float*)&selected._data.data4);
+    }
+    ImGui::End();
 }
