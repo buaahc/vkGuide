@@ -10,8 +10,10 @@ add_executable (vkRenderer
 set_property(TARGET vkRenderer PROPERTY VS_DEBUGGER_WORKING_DIRECTORY $<TARGET_FILE_DIR:vkRenderer>)
 
 target_include_directories(vkRenderer PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_include_directories(vkRenderer PUBLIC "${CMAKE_SOURCE_DIR}/third_party/imgui")
 
 target_link_libraries(vkRenderer vkguide_shared  vkbootstrap)
+target_link_libraries(vkRenderer vkguide_shared  imgui)
 
 add_custom_command(TARGET vkRenderer POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_RUNTIME_DLLS:vkRenderer> $<TARGET_FILE_DIR:vkRenderer>

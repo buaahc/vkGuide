@@ -37,6 +37,22 @@ struct FrameData {
 	DeletionQueue _deletionQueue;
 };
 
+struct ComputePushConstants {
+	glm::vec4 data1;
+	glm::vec4 data2;
+	glm::vec4 data3;
+	glm::vec4 data4;
+};
+
+struct ComputeEffect {
+	const char* _name;
+
+	VkPipeline _pipeline;
+	VkPipelineLayout _layout;
+
+	ComputePushConstants _data;
+};
+
 class VulkanEngine {
 public:
 
@@ -78,6 +94,7 @@ public:
 	//run main loop
 	void run();
 
+	void drawUI();
 private:
 	VkInstance _instance = VK_NULL_HANDLE;// Vulkan library handle
 	VkDebugUtilsMessengerEXT _debug_messenger = VK_NULL_HANDLE;// Vulkan debug output handle
@@ -96,24 +113,41 @@ private:
 	DescriptorAllocator _globalDescriptorAllocator;
 	VkDescriptorSet _drawImageDescriptorSet;
 	VkDescriptorSetLayout _drawImageDescriptorLayout;
+	
+	//计算管线
+	VkPipeline _gradientPipeline;
+	VkPipelineLayout _gradientPipelineLayout;
+
+	//immediate submit structures
+	VkFence _immFence;
+	VkCommandBuffer _immCommandBuffer;
+	VkCommandPool _immCommandPool;
+
+
+	std::vector<ComputeEffect> _backgroundEffects;
+	int _currentBackgroundEffect{ 0 };
 private:
 	void init_vulkan();
 	void init_swapchain();
 	void init_commands();
 	void init_sync_structures();
 	void init_descriptors();
-
 	void init_pipelines();
 	void init_background_pipelines();
+	void init_imgui();
 
 	void create_swapchain(uint32_t width, uint32_t height);
 	void destroy_swapchain();
+
+	//immediate submit structures
+	void immediate_submit(std::function<void(VkCommandBuffer cmd)>&& function);
+
 	void create_drawImage();
 	//glClear
 	void draw_background(VkCommandBuffer cmd);
-public:
-	VkPipeline _gradientPipeline;
-	VkPipelineLayout _gradientPipelineLayout;
+	
+	void draw_imgui(VkCommandBuffer cmd, VkImageView targetImageView);
+	void drawImgui();
 };
 //< intro
 
