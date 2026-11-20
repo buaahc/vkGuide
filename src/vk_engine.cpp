@@ -631,6 +631,7 @@ void VulkanEngine::init_background_pipelines()
         //default sky parameters
         sky._data.data1 = glm::vec4(0.1, 0.2, 0.4, 0.97);
 
+
         VK_CHECK(vkCreateComputePipelines(this->_logicDevice, VK_NULL_HANDLE, 1, &computePipelineCreateInfo, nullptr, &sky._pipeline));
 
         //add the 2 background effects into the array
