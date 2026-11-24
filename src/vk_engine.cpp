@@ -159,25 +159,7 @@ void VulkanEngine::draw()
     vkutil::transition_image(cmd, _swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 #endif // 0
 
-    //clear image
-    //this->draw_background(cmd);
 
-
-    // bind the gradient drawing compute pipeline
-    //vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, this->_gradientPipeline);
-
-    //// bind the descriptor set containing the draw image for the compute pipeline
-    //vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, this->_gradientPipelineLayout, 0, 1, &this->_drawImageDescriptorSet, 0, nullptr);
-
-    //ComputePushConstants pc;
-    //pc.data1 = glm::vec4(1, 0, 0, 1);
-    //pc.data2 = glm::vec4(0, 0, 1, 1);
-
-    //vkCmdPushConstants(cmd, this->_gradientPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ComputePushConstants), &pc);
-
-
-    //// execute the compute pipeline dispatch. We are using 16x16 workgroup size so we need to divide by it
-    //vkCmdDispatch(cmd, std::ceil(this->_drawExtent.width / 16.0), std::ceil(this->_drawExtent.height / 16.0), 1);
 
 
     {
