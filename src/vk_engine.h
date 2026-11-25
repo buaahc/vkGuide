@@ -123,9 +123,16 @@ private:
 	VkCommandBuffer _immCommandBuffer;
 	VkCommandPool _immCommandPool;
 
-
 	std::vector<ComputeEffect> _backgroundEffects;
 	int _currentBackgroundEffect{ 0 };
+
+
+	//图形管线
+	VkPipelineLayout _trianglePipelineLayout;
+	VkPipeline _trianglePipeline;
+
+	void init_triangle_pipeline();
+
 private:
 	void init_vulkan();
 	void init_swapchain();
@@ -139,13 +146,16 @@ private:
 	void create_swapchain(uint32_t width, uint32_t height);
 	void destroy_swapchain();
 
+	void recordComputeCommandBuffer(VkCommandBuffer cmd, uint32_t swapchainImageIndex);
+	void recordGeomtryCommandBuffer(VkCommandBuffer cmd, uint32_t swapchainImageIndex);
+	
 	//immediate submit structures
 	void immediate_submit(std::function<void(VkCommandBuffer cmd)>&& function);
 
 	void create_drawImage();
 	//glClear
 	void draw_background(VkCommandBuffer cmd);
-	
+	void draw_geometry(VkCommandBuffer cmd);
 	void draw_imgui(VkCommandBuffer cmd, VkImageView targetImageView);
 	void drawImgui();
 };

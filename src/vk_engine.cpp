@@ -128,78 +128,15 @@ void VulkanEngine::draw()
     VK_CHECK(vkAcquireNextImageKHR(this->_logicDevice, _swapchain, 1000000000, get_current_frame()._swapchainSemaphore, nullptr, &swapchainImageIndex));
 
 
-    this->_drawExtent.width = _drawImage.imageExtent.width;
-    this->_drawExtent.height = _drawImage.imageExtent.height;
+    this->_drawExtent.width = this->_drawImage.imageExtent.width;
+    this->_drawExtent.height = this->_drawImage.imageExtent.height;
 
     VkCommandBuffer cmd = get_current_frame()._mainCommandBuffer;
     VK_CHECK(vkResetCommandBuffer(cmd, 0));
-    //添加一个标志VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT。这是可选的，但如果我们能够告知驱动程序此缓冲区只会提交和执行一次，我们的命令编码速度可能会略有提升
-    VkCommandBufferBeginInfo cmdBeginInfo = vkinit::command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-    VK_CHECK(vkBeginCommandBuffer(cmd, &cmdBeginInfo));
 
-    //make the drawImage.image into writeable mode before rendering
-    //处于 VK_IMAGE_LAYOUT_GENERAL 布局的图像可以在不转换布局的情况下切换不同用途
-    vkutil::transition_image(cmd, this->_drawImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
-
-
-#if 0 //clear swapchainImage
-    //make the swapchain image into writeable mode before rendering
-    //处于 VK_IMAGE_LAYOUT_GENERAL 布局的图像可以在不转换布局的情况下切换不同用途
-    vkutil::transition_image(cmd, _swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
-    //make a clear-color from frame number. This will flash with a 120 frame period.
-    VkClearColorValue clearValue;
-    float flash = std::abs(std::sin(_frameNumber / 120.f));
-    clearValue = { { 0.0f, 0.0f, flash, 1.0f } };
-
-    VkImageSubresourceRange clearRange = vkinit::image_subresource_range(VK_IMAGE_ASPECT_COLOR_BIT);
-
-    //clear image
-    vkCmdClearColorImage(cmd, _swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_GENERAL, &clearValue, 1, &clearRange);
-    //make the swapchain image into presentable mode
-    vkutil::transition_image(cmd, _swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
-#endif // 0
-
-
-
-
-    {
-        ComputeEffect& effect = this->_backgroundEffects[this->_currentBackgroundEffect];
-
-        // bind the background compute pipeline
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, effect._pipeline);
-
-        // bind the descriptor set containing the draw image for the compute pipeline
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, effect._layout, 0, 1, &this->_drawImageDescriptorSet, 0, nullptr);
-
-        vkCmdPushConstants(cmd, effect._layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ComputePushConstants), &effect._data);
-        // execute the compute pipeline dispatch. We are using 16x16 workgroup size so we need to divide by it
-        vkCmdDispatch(cmd, std::ceil(this->_drawExtent.width / 16.0), std::ceil(this->_drawExtent.height / 16.0), 1);
-    }
-
-
-    //transition the draw image and the swapchain image into their correct transfer layouts
-    vkutil::transition_image(cmd, this->_drawImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    vkutil::transition_image(cmd, this->_swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-
-    // execute a copy from the draw image into the swapchain
-    vkutil::copy_image_to_image(cmd, this->_drawImage.image, this->_swapchainImages[swapchainImageIndex], this->_drawExtent, this->_swapchainExtent);
-
-    // set swapchain image layout to Attachment Optimal so we can draw it
-    vkutil::transition_image(cmd, _swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-
-    //draw imgui into the swapchain image
-    this->draw_imgui(cmd, _swapchainImageViews[swapchainImageIndex]);
-
-    // set swapchain image layout to Present so we can draw it
-    vkutil::transition_image(cmd, _swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
-
-    // set swapchain image layout to Present so we can show it on the screen
-
-    //vkutil::transition_image(cmd, this->_swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
-
-    //finalize the command buffer (we can no longer add commands, but it can now be executed)
-    VK_CHECK(vkEndCommandBuffer(cmd));
- 
+    //this->recordComputeCommandBuffer(cmd, swapchainImageIndex);
+    this->recordGeomtryCommandBuffer(cmd, swapchainImageIndex);
+    
     //prepare the submission to the queue. 
     //we want to wait on the _presentSemaphore, as that semaphore is signaled when the swapchain is ready
     //we will signal the _renderSemaphore, to signal that rendering has finished
@@ -495,6 +432,114 @@ void VulkanEngine::destroy_swapchain()
     }
 }
 
+void VulkanEngine::recordGeomtryCommandBuffer(VkCommandBuffer cmd, uint32_t swapchainImageIndex)
+{
+    //添加一个标志VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT。这是可选的，但如果我们能够告知驱动程序此缓冲区只会提交和执行一次，我们的命令编码速度可能会略有提升
+    VkCommandBufferBeginInfo cmdBeginInfo = vkinit::command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+
+    VK_CHECK(vkBeginCommandBuffer(cmd, &cmdBeginInfo));
+
+    // transition our main draw image into general layout so we can write into it
+    // we will overwrite it all so we dont care about what was the older layout
+    vkutil::transition_image(cmd, this->_drawImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+
+    //glClear()
+    this->draw_background(cmd);
+
+    vkutil::transition_image(cmd, this->_drawImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+    this->draw_geometry(cmd);
+
+    //transtion the draw image and the swapchain image into their correct transfer layouts
+    vkutil::transition_image(cmd, this->_drawImage.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    vkutil::transition_image(cmd, this->_swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+    // execute a copy from the draw image into the swapchain
+    vkutil::copy_image_to_image(cmd, this->_drawImage.image, this->_swapchainImages[swapchainImageIndex], this->_drawExtent, this->_swapchainExtent);
+
+    // set swapchain image layout to Attachment Optimal so we can draw it
+    vkutil::transition_image(cmd, this->_swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+    //draw imgui into the swapchain image
+    this->draw_imgui(cmd, this->_swapchainImageViews[swapchainImageIndex]);
+
+    // set swapchain image layout to Present so we can draw it
+    vkutil::transition_image(cmd, this->_swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+
+    // set swapchain image layout to Present so we can show it on the screen
+
+    //finalize the command buffer (we can no longer add commands, but it can now be executed)
+    VK_CHECK(vkEndCommandBuffer(cmd));
+}
+
+void VulkanEngine::recordComputeCommandBuffer(VkCommandBuffer cmd, uint32_t swapchainImageIndex)
+{
+    //添加一个标志VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT。这是可选的，但如果我们能够告知驱动程序此缓冲区只会提交和执行一次，我们的命令编码速度可能会略有提升
+    VkCommandBufferBeginInfo cmdBeginInfo = vkinit::command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+    VK_CHECK(vkBeginCommandBuffer(cmd, &cmdBeginInfo));
+
+    //make the drawImage.image into writeable mode before rendering
+    //处于 VK_IMAGE_LAYOUT_GENERAL 布局的图像可以在不转换布局的情况下切换不同用途
+    vkutil::transition_image(cmd, this->_drawImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+
+#if 0 //clear swapchainImage
+    //make the swapchain image into writeable mode before rendering
+    //处于 VK_IMAGE_LAYOUT_GENERAL 布局的图像可以在不转换布局的情况下切换不同用途
+    vkutil::transition_image(cmd, _swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+    //make a clear-color from frame number. This will flash with a 120 frame period.
+    VkClearColorValue clearValue;
+    float flash = std::abs(std::sin(_frameNumber / 120.f));
+    clearValue = { { 0.0f, 0.0f, flash, 1.0f } };
+
+    VkImageSubresourceRange clearRange = vkinit::image_subresource_range(VK_IMAGE_ASPECT_COLOR_BIT);
+
+    //clear image
+    vkCmdClearColorImage(cmd, _swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_GENERAL, &clearValue, 1, &clearRange);
+    //make the swapchain image into presentable mode
+    vkutil::transition_image(cmd, _swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+#endif // 0
+
+    {
+        //计算着色指令不需要renderpass
+        ComputeEffect& effect = this->_backgroundEffects[this->_currentBackgroundEffect];
+
+        // bind the background compute pipeline
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, effect._pipeline);
+
+        // bind the descriptor set containing the draw image for the compute pipeline
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, effect._layout, 0, 1, &this->_drawImageDescriptorSet, 0, nullptr);
+
+        vkCmdPushConstants(cmd, effect._layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ComputePushConstants), &effect._data);
+        // execute the compute pipeline dispatch. We are using 16x16 workgroup size so we need to divide by it
+        vkCmdDispatch(cmd, std::ceil(this->_drawExtent.width / 16.0), std::ceil(this->_drawExtent.height / 16.0), 1);
+    }
+
+
+    //transition the draw image and the swapchain image into their correct transfer layouts
+    vkutil::transition_image(cmd, this->_drawImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    vkutil::transition_image(cmd, this->_swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+    // execute a copy from the draw image into the swapchain
+    vkutil::copy_image_to_image(cmd, this->_drawImage.image, this->_swapchainImages[swapchainImageIndex], this->_drawExtent, this->_swapchainExtent);
+
+    // set swapchain image layout to Attachment Optimal so we can draw it
+    vkutil::transition_image(cmd, _swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+    //draw imgui into the swapchain image
+    this->draw_imgui(cmd, _swapchainImageViews[swapchainImageIndex]);
+
+    // set swapchain image layout to Present so we can draw it
+    vkutil::transition_image(cmd, _swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+
+    // set swapchain image layout to Present so we can show it on the screen
+
+    //vkutil::transition_image(cmd, this->_swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+
+    //finalize the command buffer (we can no longer add commands, but it can now be executed)
+    VK_CHECK(vkEndCommandBuffer(cmd));
+
+}
+
 void VulkanEngine::create_drawImage()
 {
     //draw image size will match the window
@@ -552,9 +597,46 @@ void VulkanEngine::draw_background(VkCommandBuffer cmd)
     vkCmdClearColorImage(cmd, this->_drawImage.image, VK_IMAGE_LAYOUT_GENERAL, &clearValue, 1, &clearRange);
 }
 
+void VulkanEngine::draw_geometry(VkCommandBuffer cmd)
+{
+    //begin a render pass  connected to our draw image
+    //帧缓存附件--创建颜色附件-绑定imageView
+    VkRenderingAttachmentInfo colorAttachment = vkinit::attachment_info(this->_drawImage.imageView, nullptr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    VkRenderingInfo renderInfo = vkinit::rendering_info(this->_drawExtent, &colorAttachment, nullptr);
+
+    vkCmdBeginRendering(cmd, &renderInfo);
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, this->_trianglePipeline);
+
+    //set dynamic viewport and scissor
+    VkViewport viewport = {};
+    viewport.x = 0;
+    viewport.y = 0;
+    viewport.width = this->_drawExtent.width;
+    viewport.height = this->_drawExtent.height;
+    viewport.minDepth = 0.f;
+    viewport.maxDepth = 1.f;
+
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+
+    VkRect2D scissor = {};
+    scissor.offset.x = 0;
+    scissor.offset.y = 0;
+    scissor.extent.width = this->_drawExtent.width;
+    scissor.extent.height = this->_drawExtent.height;
+
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    //launch a draw command to draw 3 vertices
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+
+    vkCmdEndRendering(cmd);
+}
+
 void VulkanEngine::init_pipelines()
 {
     this->init_background_pipelines();
+    this->init_triangle_pipeline();
 }
 
 void VulkanEngine::init_background_pipelines()
@@ -676,6 +758,70 @@ void VulkanEngine::init_background_pipelines()
 #endif // 0
 }
 
+void VulkanEngine::init_triangle_pipeline()
+{
+    std::string exePath = getExeDirectory();
+    std::string triangleVs = exePath + "/shaders/colored_triangle.frag.spv";
+    VkShaderModule triangleFragShader;
+    if (!vkutil::load_shader_module(triangleVs.c_str(), this->_logicDevice, &triangleFragShader)) {
+        fmt::print("Error when building the triangle fragment shader module");
+    }
+    else {
+        fmt::print("Triangle fragment shader succesfully loaded");
+    }
+    std::string triangleFs = exePath + "/shaders/colored_triangle.vert.spv";
+
+    VkShaderModule triangleVertexShader;
+    if (!vkutil::load_shader_module(triangleFs.c_str(), this->_logicDevice, &triangleVertexShader)) {
+        fmt::print("Error when building the triangle vertex shader module");
+    }
+    else {
+        fmt::print("Triangle vertex shader succesfully loaded");
+    }
+
+    //build the pipeline layout that controls the inputs/outputs of the shader
+    //we are not using descriptor sets or other systems yet, so no need to use anything other than empty default
+    VkPipelineLayoutCreateInfo pipeline_layout_info = vkinit::pipeline_layout_create_info();
+    VK_CHECK(vkCreatePipelineLayout(this->_logicDevice, &pipeline_layout_info, nullptr, &this->_trianglePipelineLayout));
+
+
+    PipelineBuilder pipelineBuilder;
+
+    //use the triangle layout we created
+    pipelineBuilder._pipelineLayout = this->_trianglePipelineLayout;
+    //connecting the vertex and pixel shaders to the pipeline
+    pipelineBuilder.set_shaders(triangleVertexShader, triangleFragShader);
+    //it will draw triangles
+    pipelineBuilder.set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+    //filled triangles
+    pipelineBuilder.set_polygon_mode(VK_POLYGON_MODE_FILL);
+    //no backface culling
+    pipelineBuilder.set_cull_mode(VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE);
+    //no multisampling
+    pipelineBuilder.set_multisampling_none();
+    //no blending
+    pipelineBuilder.disable_blending();
+    //no depth testing
+    pipelineBuilder.disable_depthtest();
+
+    //connect the image format we will draw into, from draw image
+    pipelineBuilder.set_color_attachment_format(_drawImage.imageFormat);
+    pipelineBuilder.set_depth_format(VK_FORMAT_UNDEFINED);
+
+    //finally build the pipeline
+    this->_trianglePipeline = pipelineBuilder.build_pipeline(this->_logicDevice);
+
+    //clean structures
+    vkDestroyShaderModule(this->_logicDevice, triangleFragShader, nullptr);
+    vkDestroyShaderModule(this->_logicDevice, triangleVertexShader, nullptr);
+
+    this->_mainDeletionQueue.push_function([&]() {
+        vkDestroyPipelineLayout(this->_logicDevice, this->_trianglePipelineLayout, nullptr);
+        vkDestroyPipeline(this->_logicDevice, this->_trianglePipeline, nullptr);
+        });
+
+}
+
 void VulkanEngine::immediate_submit(std::function<void(VkCommandBuffer cmd)>&& function)
 {
     VK_CHECK(vkResetFences(this->_logicDevice, 1, &this->_immFence));
@@ -771,13 +917,13 @@ void VulkanEngine::init_imgui()
 
 void VulkanEngine::draw_imgui(VkCommandBuffer cmd, VkImageView targetImageView)
 {
+    //帧缓存附件--创建颜色附件-绑定imageView
     VkRenderingAttachmentInfo colorAttachment = vkinit::attachment_info(targetImageView, nullptr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    //类似于帧缓存-绑定附件
     VkRenderingInfo renderInfo = vkinit::rendering_info(this->_swapchainExtent, &colorAttachment, nullptr);
-
+    //绑定帧缓存
     vkCmdBeginRendering(cmd, &renderInfo);
-
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
-
     vkCmdEndRendering(cmd);
 }
 
